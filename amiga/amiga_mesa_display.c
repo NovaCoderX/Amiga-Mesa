@@ -19,33 +19,6 @@
  * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-/* New software driver for AGA and gfxboards (compatible to
- cybergraphics.library). Based on ADisp_SW.c. Uses some functions
- of ADisp_SW.c.
-
- Uses functions of ADisp_SW.c (and ADispSW.c uses functions
- of this source here). Could be merged into one source, but,
- well, it works, so why change?
-
- Only for window mode/direct rendering resp. full screen mode
- Could be even more faster, if the algorithms would take care
- that as many longword accesses to gfx RAM space as possible
- are longword-aligned. The assembler implementation does this
- indeed.
-
- 17.1.1998 - start coding
- */
-
-/*
- * Note that you'll usually have to flip Y coordinates since Mesa's
- * window coordinates start at the bottom and increase upward.  Most
- * window system's Y-axis increases downward
- *
- * See dd.h for more device driver info.
- * See the other device driver implementations for ideas.
- *
- */
-
 #include <stdlib.h>
 #include <stdio.h>
 

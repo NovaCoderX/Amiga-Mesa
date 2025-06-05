@@ -88,19 +88,24 @@ static void get_buffer_size(GLframebuffer *buffer, GLuint *width, GLuint *height
  * This procedure clears either the front and/or the back COLOR buffers.
  * Only the "left" buffer is cleared since we are not stereo.
  * Clearing of the other non-color buffers is left to the swrast.
- * We also only clear the color buffers if the color masks are all 1's.
- * Otherwise, we let swrast do it.
  */
 static void clear(GLcontext *gl_ctx, GLbitfield mask, GLboolean all, GLint x, GLint y, GLint width, GLint height) {
-	AMesaContext *c = (AMesaContext*) gl_ctx->DriverCtx;
-	const GLuint *colorMask = (GLuint*) &gl_ctx->Color.ColorMask;
+	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
+	const GLuint* colorMask = (GLuint*) &gl_ctx->Color.ColorMask;
 
 	// We can't handle color or index masking.
 	if (*colorMask == 0xffffffff && gl_ctx->Color.IndexMask == 0xffffffff) {
 		if (mask & DD_FRONT_LEFT_BIT) {
 			//_mesa_debug(NULL, "SWFSD_clear_RGB16PC %08lx - DD_FRONT_LEFT_BIT\n", c->clear_color); // Gears passed.
 			if (all) {
-				CopyMemQuick(c->clear_buffer, c->back_buffer, (c->height * c->bprow));
+				CopyMemQuick(a_ctx->clear_buffer, a_ctx->back_buffer, (a_ctx->height * a_ctx->bprow));
+			} else {
+				GLushort* buffer = (GLushort*) a_ctx->back_buffer;
+				for (int i = x; i < width; i++) {
+					for (int j = y; j < height; j++) {
+						buffer[i + j] = a_ctx->clear_color;
+					}
+				}
 			}
 
 			mask &= ~DD_FRONT_LEFT_BIT;
@@ -155,7 +160,7 @@ static void set_buffer(GLcontext *gl_ctx, GLframebuffer *buffer, GLuint bufferBi
 	// Note - Not needed as we don't use a double buffer (as far as OpenGL is concerned).
 }
 
-/* Write a horizontal span of RGBA color pixels with a boolean mask. */
+/* Write a horizontal span of RGB color pixels with a boolean mask. */
 static void write_rgb_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y, const GLubyte rgba[][3], const GLubyte mask[]) {
 	AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 	GLushort *buffer = (GLushort*) (a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->bprow + x * 2);
@@ -181,7 +186,7 @@ static void write_rgb_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y, 
 	}
 }
 
-/* Write a horizontal span of RGB color pixels with a boolean mask. */
+/* Write a horizontal span of RGBA color pixels with a boolean mask. */
 static void write_rgba_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y, const GLubyte rgba[][4], const GLubyte mask[]) {
 	AMesaContext *c = (AMesaContext*) gl_ctx->DriverCtx;
 	GLushort *buffer = (GLushort*) (c->back_buffer + (c->height - y - 1) * c->bprow + x * 2);

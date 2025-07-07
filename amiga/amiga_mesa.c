@@ -235,19 +235,19 @@ AMesaContext* amesa_create_context(struct Window *window) {
 
 	a_ctx->depth = GetCyberMapAttr(a_ctx->hardware_window->RPort->BitMap, CYBRMATTR_DEPTH);
 	if (a_ctx->depth != 16) {
-		_mesa_error(NULL, GL_INVALID_VALUE, "Only 16bit color depth is supported");
+		_mesa_error(NULL, GL_INVALID_VALUE, "Only 16 bit PC color depth is supported by OpenGL");
+		return NULL;
+	}
+
+	a_ctx->fmt = GetCyberMapAttr(a_ctx->hardware_window->RPort->BitMap, CYBRMATTR_PIXFMT);
+	if (a_ctx->fmt != PIXFMT_RGB16PC) {
+		_mesa_error(NULL, GL_INVALID_VALUE, "Only 16 bit color depth is supported by OpenGL");
 		return NULL;
 	}
 
 	a_ctx->width = GetCyberMapAttr(a_ctx->hardware_window->RPort->BitMap, CYBRMATTR_WIDTH);
 	a_ctx->height = GetCyberMapAttr(a_ctx->hardware_window->RPort->BitMap, CYBRMATTR_HEIGHT);
 	a_ctx->bprow = GetCyberMapAttr(a_ctx->hardware_window->RPort->BitMap, CYBRMATTR_XMOD);
-
-	a_ctx->fmt = GetCyberMapAttr(a_ctx->hardware_window->RPort->BitMap, CYBRMATTR_PIXFMT);
-	if (a_ctx->fmt !=PIXFMT_RGB16PC) {
-		_mesa_error(NULL, GL_INVALID_VALUE, "Only 16bit color depth is supported");
-		return NULL;
-	}
 
 	_mesa_debug(NULL, "Creating Mesa Visual...\n");
 	a_ctx->gl_visual = amesa_create_visual(a_ctx);
@@ -265,7 +265,7 @@ AMesaContext* amesa_create_context(struct Window *window) {
 
 	_mesa_enable_sw_extensions(a_ctx->gl_ctx);
 	_mesa_enable_1_3_extensions(a_ctx->gl_ctx);
-	//_mesa_enable_1_4_extensions(a_ctx->gl_ctx);
+	//_mesa_enable_1_4_extensions(ctx->gl_ctx));
 
 	_mesa_debug(NULL, "Creating Mesa buffer...\n");
 	a_ctx->gl_buffer = _mesa_create_framebuffer(a_ctx->gl_visual, a_ctx->gl_visual->depthBits > 0, a_ctx->gl_visual->stencilBits > 0,

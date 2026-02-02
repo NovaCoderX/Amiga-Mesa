@@ -1,4 +1,4 @@
 # Amiga-Mesa
-Software implementation of OpenGL for classic Amiga computers based on Mesa v4.1 mixed with StormMesa2010 (https://aminet.net/package/util/libs/StormMesa2010)
+Software implementation of OpenGL based on Mesa v4.1 for classic Amiga computers running RTG.
 
-For performance reasons, only 640x480 and 16bit displays are supported.
+For performance reasons, only 32-bit displays are supported.

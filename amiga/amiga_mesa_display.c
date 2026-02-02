@@ -51,8 +51,11 @@
 #include <proto/cybergraphics.h>
 #include <cybergraphics/cybergraphics.h>
 
-#define TC_RGB16PC(r,g,b) (((b >> 3) << 8) | (g >> 5) | ((g >> 2) << 13) | ((r >> 3)<<3))
-#define LV(type,lvalue) (*((type*)((void*)(&lvalue))))
+#define TC_ARGB32(r, g, b, a) (((a) << 24) | ((r) << 16) | ((g) << 8) | (b))
+
+static inline void WritePixelArrayEx(APTR a,UWORD b,UWORD c,UWORD d,struct RastPort *e, UWORD f,UWORD g,UWORD h,UWORD i,UBYTE j) {
+	WritePixelArray(a,b,c,d,e,f,g,h,i,j);
+}
 
 static const GLubyte* get_string(GLcontext *ctx, GLenum name) {
 	if (name == GL_RENDERER) {
@@ -63,8 +66,6 @@ static const GLubyte* get_string(GLcontext *ctx, GLenum name) {
 }
 
 void amesa_display_update_state(GLcontext *gl_ctx, GLuint new_state) {
-	//_mesa_debug(NULL, "amesa_display_update_state()....\n");
-
 	// Propagate state change information to swrast and swrast_setup
 	// modules.  The Amiga driver has no internal GL-dependent state.
 	_swrast_InvalidateState(gl_ctx, new_state);
@@ -81,41 +82,18 @@ static void get_buffer_size(GLframebuffer *buffer, GLuint *width, GLuint *height
 	*height = c->height;
 }
 
-/*
- * Clear the specified region of the color buffer using the clear color
- * or index as specified by one of the two functions above.
- *
- * This procedure clears either the front and/or the back COLOR buffers.
- * Only the "left" buffer is cleared since we are not stereo.
- * Clearing of the other non-color buffers is left to the swrast.
- */
-static void clear(GLcontext *gl_ctx, GLbitfield mask, GLboolean all, GLint x, GLint y, GLint width, GLint height) {
-	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
-	const GLuint* colorMask = (GLuint*) &gl_ctx->Color.ColorMask;
+static void set_buffer(GLcontext *gl_ctx, GLframebuffer *buffer, GLuint bufferBit) {
+#ifdef DEBUG
+	_mesa_debug(NULL, "set_buffer()....\n");
+#endif
+	// Note - Not needed as we don't use a double buffer (as far as OpenGL is concerned).
+}
 
-	// We can't handle color or index masking.
-	if (*colorMask == 0xffffffff && gl_ctx->Color.IndexMask == 0xffffffff) {
-		if (mask & DD_FRONT_LEFT_BIT) {
-			//_mesa_debug(NULL, "SWFSD_clear_RGB16PC %08lx - DD_FRONT_LEFT_BIT\n", c->clear_color); // Gears passed.
-			if (all) {
-				CopyMemQuick(a_ctx->clear_buffer, a_ctx->back_buffer, (a_ctx->height * a_ctx->bprow));
-			} else {
-				GLushort* buffer = (GLushort*) a_ctx->back_buffer;
-				for (int i = x; i < width; i++) {
-					for (int j = y; j < height; j++) {
-						buffer[i + j] = a_ctx->clear_color;
-					}
-				}
-			}
-
-			mask &= ~DD_FRONT_LEFT_BIT;
-		}
-	}
-
-	// Call swrast if there is anything left to clear (like DEPTH)
-	if (mask) {
-		_swrast_Clear(gl_ctx, mask, all, x, y, width, height);
-	}
+static void enable(GLcontext *gl_ctx, GLenum pname, GLboolean enable) {
+#ifdef DEBUG
+	_mesa_debug(NULL, "enable()....\n");
+#endif
+	// Note - Nothing currently supported.
 }
 
 static void flush(GLcontext *gl_ctx) {
@@ -128,86 +106,124 @@ static void flush(GLcontext *gl_ctx) {
  * Set the color used to clear the color buffer.
  */
 static void clear_color(GLcontext *gl_ctx, const GLfloat color[4]) {
-	AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
-	GLubyte r, g, b;
-	GLushort *buffer = (GLushort*) a_ctx->clear_buffer;
-	GLuint oldClearColor = a_ctx->clear_color;
+    AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
+    GLubyte r, g, b, a;
+    GLuint oldClearColor = a_ctx->clear_color;
 
-	CLAMPED_FLOAT_TO_UBYTE(r, color[RCOMP]);
-	CLAMPED_FLOAT_TO_UBYTE(g, color[GCOMP]);
-	CLAMPED_FLOAT_TO_UBYTE(b, color[BCOMP]);
+    CLAMPED_FLOAT_TO_UBYTE(r, color[RCOMP]);
+    CLAMPED_FLOAT_TO_UBYTE(g, color[GCOMP]);
+    CLAMPED_FLOAT_TO_UBYTE(b, color[BCOMP]);
+    CLAMPED_FLOAT_TO_UBYTE(a, color[ACOMP]);
 
-	a_ctx->clear_color = TC_RGB16PC(r, g, b);
+    a_ctx->clear_color = TC_ARGB32(r, g, b, a);
 
 	// We only do this if the clear color actually changes.
 	if (a_ctx->clear_color != oldClearColor) {
-		for (int i = 0; i < (a_ctx->width * a_ctx->height); i++) {
-			buffer[i] = a_ctx->clear_color;
+		// Total pixels in a non-padded buffer is simply width * height
+		GLuint *buffer = (GLuint*) a_ctx->clear_buffer;
+		GLuint clr = a_ctx->clear_color;
+		GLint total_pixels = a_ctx->width * a_ctx->height;
+
+		for (GLint i = 0; i < total_pixels; i++) {
+			buffer[i] = clr;
 		}
 	}
 }
 
-static void enable(GLcontext *gl_ctx, GLenum pname, GLboolean enable) {
-#ifdef DEBUG
-	_mesa_debug(NULL, "enable()....\n");
-#endif
-}
+/*
+ * Clear the specified region of the color buffer using the clear color
+ * or index as specified by one of the two functions above.
+ *
+ * This procedure clears either the front and/or the back COLOR buffers.
+ * Only the "left" buffer is cleared since we are not stereo.
+ * Clearing of the other non-color buffers is left to the swrast.
+ */
+static void clear(GLcontext *gl_ctx, GLbitfield mask, GLboolean all,
+                  GLint x, GLint y, GLint width, GLint height) {
+    AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
+    const GLuint colorMask = *((GLuint *) &gl_ctx->Color.ColorMask);
 
-static void set_buffer(GLcontext *gl_ctx, GLframebuffer *buffer, GLuint bufferBit) {
-#ifdef DEBUG
-	_mesa_debug(NULL, "set_buffer()....\n");
-#endif
-	// Note - Not needed as we don't use a double buffer (as far as OpenGL is concerned).
+    // Only proceed if color masking is off (standard behavior)
+    if (colorMask == 0xffffffff) {
+        if (mask & DD_FRONT_LEFT_BIT) {
+            if (all) {
+                // Bulk copy the pre-filled clear_buffer into the back_buffer
+                // In 32-bit non-padded mode, pitch is exactly width * 4
+                CopyMemQuick(a_ctx->clear_buffer, a_ctx->back_buffer, (a_ctx->height * a_ctx->pitch));
+            } else {
+                // Use 32-bit pointers for ARGB pixels
+                GLuint* buffer = (GLuint*) a_ctx->back_buffer;
+
+                // NEW APPROACH: Stride in pixels is just the width
+                const GLint stride = a_ctx->width;
+                const GLint ymax   = a_ctx->height - 1;
+                const GLuint clr   = a_ctx->clear_color; // Now a 32-bit value
+
+                for (GLint row = 0; row < height; row++) {
+                    GLint py = ymax - (y + row);
+                    if ((unsigned)py < (unsigned)a_ctx->height) {
+                        // Offset into the 32-bit buffer
+                        GLuint* dst = buffer + (py * stride) + x;
+
+                        // Fill the row with 32-bit ARGB values
+                        for (GLint col = 0; col < width; col++) {
+                            dst[col] = clr;
+                        }
+                    }
+                }
+            }
+
+            mask &= ~DD_FRONT_LEFT_BIT;
+        }
+    }
+
+    // Pass remaining buffers (like Depth/Stencil) to the software rasterizer
+    if (mask) {
+        _swrast_Clear(gl_ctx, mask, all, x, y, width, height);
+    }
 }
 
 /* Write a horizontal span of RGB color pixels with a boolean mask. */
-static void write_rgb_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y, const GLubyte rgba[][3], const GLubyte mask[]) {
-	AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
-	GLushort *buffer = (GLushort*) (a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->bprow + x * 2);
-	int i;
+static void write_rgb_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y,
+                           const GLubyte rgba[][3], const GLubyte mask[]) {
+    AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-#ifdef DEBUG
-	_mesa_debug(NULL, "SWFSD_write_color_span3_RGB16PC\n");
-#endif
+    // Calculate the start of the row in the 32-bit buffer (4 bytes per pixel)
+    // Using simple width-based indexing for the non-padded approach
+    GLuint *buffer = (GLuint*)a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->width + x;
 
-	if (mask) {
-		for (i = 0; i < n; i++) {
-			if (mask[i]) {
-				*buffer = TC_RGB16PC(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP]);
-			}
-
-			buffer++;
-		}
-	} else {
-		for (i = 0; i < n; i++) {
-			*buffer = TC_RGB16PC(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP]);
-			buffer++;
-		}
-	}
+    if (mask) {
+        for (GLuint i = 0; i < n; i++) {
+            if (mask[i]) {
+                // Convert 3-component RGB to 32-bit ARGB (Alpha set to 255/Opaque)
+                buffer[i] = TC_ARGB32(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP], 255);
+            }
+        }
+    } else {
+        // FAST PATH: No mask, direct 32-bit writes
+        for (GLuint i = 0; i < n; i++) {
+            buffer[i] = TC_ARGB32(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP], 255);
+        }
+    }
 }
 
 /* Write a horizontal span of RGBA color pixels with a boolean mask. */
-static void write_rgba_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y, const GLubyte rgba[][4], const GLubyte mask[]) {
-	AMesaContext *c = (AMesaContext*) gl_ctx->DriverCtx;
-	GLushort *buffer = (GLushort*) (c->back_buffer + (c->height - y - 1) * c->bprow + x * 2);
-	int i;
+static void write_rgba_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y,
+                           const GLubyte rgba[][4], const GLubyte mask[]) {
+	AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-#ifdef DEBUG
-	 _mesa_debug(NULL, "SWFSD_write_color_span4_RGB16PC\n"); // Gears passed
-#endif
+	// Simple 32-bit pointer math: (row offset) + x
+	GLuint *buffer = (GLuint*)a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->width + x;
 
 	if (mask) {
-		for (i = 0; i < n; i++) {
+		for (GLuint i = 0; i < n; i++) {
 			if (mask[i]) {
-				*buffer = TC_RGB16PC(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP]);
+				buffer[i] = TC_ARGB32(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP], rgba[i][ACOMP]);
 			}
-
-			buffer++;
 		}
 	} else {
-		for (i = 0; i < n; i++) {
-			*buffer = TC_RGB16PC(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP]);
-			buffer++;
+		for (GLuint i = 0; i < n; i++) {
+			buffer[i] = TC_ARGB32(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP], rgba[i][ACOMP]);
 		}
 	}
 }
@@ -216,47 +232,41 @@ static void write_rgba_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y,
  * Write a horizontal span of pixels with a boolean mask.  The current color
  * is used for all pixels.
  */
-static void write_mono_rgba_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y, const GLchan color[4], const GLubyte mask[]) {
-	AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
-	GLushort hicolor = TC_RGB16PC(color[RCOMP], color[GCOMP], color[BCOMP]);
-	int i;
+static void write_mono_rgba_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y,
+                                const GLchan color[4], const GLubyte mask[]) {
+    AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-#ifdef DEBUG
-	 _mesa_debug(NULL, "SWFSD_write_mono_span_RGB16()\n"); // Gears passed
-#endif
+    GLuint hicolor = TC_ARGB32(color[RCOMP], color[GCOMP], color[BCOMP], color[ACOMP]);
+	GLuint *buffer = (GLuint*)a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->width + x;
 
-	GLushort *buffer = (GLushort*) (a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->bprow + x * 2);
-	for (i = 0; i < n; i++) {
-		if (*mask++) {
-			*buffer = hicolor;
+	if (mask) {
+		for (GLuint i = 0; i < n; i++) {
+			if (mask[i]) {
+				buffer[i] = hicolor;
+			}
 		}
-
-		buffer++;
+	} else {
+		// Fast path for unmasked mono spans
+		for (GLuint i = 0; i < n; i++) {
+			buffer[i] = hicolor;
+		}
 	}
 }
 
 /* Write an array of RGBA pixels with a boolean mask. */
-static void write_rgba_pixels(const GLcontext *gl_ctx, GLuint n, const GLint x[], const GLint y[], const GLubyte rgba[][4],
-		const GLubyte mask[]) {
-	AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
-	GLushort *buffer = (GLushort*) a_ctx->back_buffer;
-	int h = a_ctx->height - 1;
-	int w = a_ctx->bprow >> 1;
-	int i;
+static void write_rgba_pixels(const GLcontext *gl_ctx, GLuint n, const GLint x[], const GLint y[],
+                             const GLubyte rgba[][4], const GLubyte mask[]) {
+    AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
+    GLuint *buffer = (GLuint*) a_ctx->back_buffer;
+    int h = a_ctx->height - 1;
+    int w = a_ctx->width;
 
-#ifdef DEBUG
-	_mesa_debug(NULL, "SWFSD_write_color_pixels_RGB16PC\n"); //-> stars passed
-#endif
-
-	for (i = 0; i < n; i++) {
-		if (*mask++) {
-			buffer[(h - (*y)) * w + (*x)] = TC_RGB16PC((*rgba)[0], (*rgba)[1], (*rgba)[2]);
-		}
-
-		x++;
-		y++;
-		rgba++;
-	}
+    for (GLuint i = 0; i < n; i++) {
+        if (mask[i]) {
+            // Straightforward 32-bit array indexing
+            buffer[(h - y[i]) * w + x[i]] = TC_ARGB32(rgba[i][0], rgba[i][1], rgba[i][2], rgba[i][3]);
+        }
+    }
 }
 
 /*
@@ -266,93 +276,68 @@ static void write_rgba_pixels(const GLcontext *gl_ctx, GLuint n, const GLint x[]
 static void write_mono_rgba_pixels(const GLcontext *gl_ctx, GLuint n, const GLint x[], const GLint y[], const GLchan color[4],
 		const GLubyte mask[]) {
 	AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
-	GLushort *buffer = (GLushort*) a_ctx->back_buffer;
-	GLushort hicolor = TC_RGB16PC(color[RCOMP], color[GCOMP], color[BCOMP]);
+
+	// Use 32-bit pointers for ARGB [cite: 18, 22]
+	GLuint *buffer = (GLuint*) a_ctx->back_buffer;
+
+	// Convert the single mono color to 32-bit ARGB [cite: 13, 22]
+	GLuint hicolor = TC_ARGB32(color[RCOMP], color[GCOMP], color[BCOMP], color[ACOMP]);
+
 	int h = a_ctx->height - 1;
-	int w = a_ctx->bprow >> 1;
-	int i;
 
-#ifdef DEBUG
-	_mesa_debug(NULL, "SWFSD_write_mono_pixels_RGB16\n");
-#endif
+	// In the non-padded approach, stride is just the width
+	int stride = a_ctx->width;
 
-	for (i = 0; i < n; i++) {
-		if (*mask++) {
-			buffer[(h - (*y)) * w + (*x)] = hicolor;
+	for (GLuint i = 0; i < n; i++) {
+		if (mask[i]) {
+			// Accessing 32-bit pixels using the simplified width stride [cite: 19, 24, 39]
+			buffer[(h - y[i]) * stride + x[i]] = hicolor;
 		}
-
-		x++;
-		y++;
 	}
 }
 
 /* Read a horizontal span of color pixels. */
 static void read_rgba_span(const GLcontext *gl_ctx, GLuint n, GLint x, GLint y, GLubyte rgba[][4]) {
-	AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
-	GLushort *buffer = (GLushort*) (a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->bprow + x * 2);
-	int i;
-	unsigned long color;
-	unsigned long temp;
-	int n1 = (n >> 1);
-	int n2 = (n & 0x01);
+    AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-#ifdef DEBUG
-	_mesa_debug(NULL, "SWFSD_read_color_span_RGB16PC\n");
-#endif
+    // Use GLuint* to ensure the CPU performs 32-bit fetches
+    GLuint *src = (GLuint*)a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->width + x;
 
-	for (i = 0; i < n1; i++) {
-		temp = *(LV(long *, buffer))++;
-		color = temp >> 16;
-		(*rgba)[0] = (GLubyte) (color & 0xf8);
-		(*rgba)[1] = (GLubyte) (((color << 5) & 0xe0) | ((color >> 11) & 0x1c));
-		(*rgba)[2] = (GLubyte) ((color >> 5) & 0xf8);
-		(*rgba)[3] = 0xff;
-		rgba++;
-		color = temp & 0xffff;
-		(*rgba)[0] = (GLubyte) (color & 0xf8);
-		(*rgba)[1] = (GLubyte) (((color << 5) & 0xe0) | ((color >> 11) & 0x1c));
-		(*rgba)[2] = (GLubyte) ((color >> 5) & 0xf8);
-		(*rgba)[3] = 0xff;
-		rgba++;
-	}
+    for (GLuint i = 0; i < n; i++) {
+        GLuint pixel = src[i]; // Fetch the whole pixel at once
 
-	for (i = 0; i < n2; i++) {
-		color = *buffer++;
-		(*rgba)[0] = (GLubyte) (color & 0xf8);
-		(*rgba)[1] = (GLubyte) (((color << 5) & 0xe0) | ((color >> 11) & 0x1c));
-		(*rgba)[2] = (GLubyte) ((color >> 5) & 0xf8);
-		(*rgba)[3] = 0xff;
-		rgba++;
-	}
+        rgba[i][RCOMP] = (GLubyte)((pixel >> 16) & 0xff);
+        rgba[i][GCOMP] = (GLubyte)((pixel >> 8)  & 0xff);
+        rgba[i][BCOMP] = (GLubyte)(pixel & 0xff);
+        rgba[i][ACOMP] = (GLubyte)((pixel >> 24) & 0xff);
+    }
 }
 
 /* Read an array of color pixels. */
 static void read_rgba_pixels(const GLcontext *gl_ctx, GLuint n, const GLint x[], const GLint y[], GLubyte rgba[][4],
-		const GLubyte mask[]) {
-	AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
-	GLushort *buffer = (GLushort*) a_ctx->back_buffer;
-	int h = a_ctx->height - 1;
-	int w = a_ctx->bprow >> 1;
-	int i;
-	unsigned short color;
+        const GLubyte mask[]) {
+    AMesaContext *a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-#ifdef DEBUG
-	_mesa_debug(NULL, "SWFSD_read_color_pixels_RGB16PC\n");
-#endif
+    // Use 32-bit pointers for the ARGB back buffer
+    GLuint *buffer = (GLuint*) a_ctx->back_buffer;
 
-	for (i = 0; i < n; i++) {
-		if (*mask++) {
-			color = buffer[(h - (*y)) * w + (*x)];
-			(*rgba)[0] = (GLubyte) (color & 0xf8);
-			(*rgba)[1] = (GLubyte) (((color << 5) & 0xe0) | ((color >> 11) & 0x1c));
-			(*rgba)[2] = (GLubyte) ((color >> 5) & 0xf8);
-			(*rgba)[3] = (GLubyte) 0xff;
-		}
+    int h = a_ctx->height - 1;
 
-		x++;
-		y++;
-		rgba++;
-	}
+    // In the non-padded approach, stride in pixels is exactly the width
+    int stride = a_ctx->width;
+
+    for (GLuint i = 0; i < n; i++) {
+        if (mask[i]) {
+            // Read the 32-bit ARGB pixel
+            GLuint color = buffer[(h - y[i]) * stride + x[i]];
+
+            // Unpack ARGB8888 components (Byte 0: Alpha, 1: Red, 2: Green, 3: Blue)
+            rgba[i][RCOMP] = (GLubyte)((color >> 16) & 0xff); // Red
+            rgba[i][GCOMP] = (GLubyte)((color >> 8)  & 0xff); // Green
+            rgba[i][BCOMP] = (GLubyte)(color & 0xff); // Blue
+            rgba[i][ACOMP] = (GLubyte)((color >> 24) & 0xff); // Alpha
+        }
+    }
 }
 
 // Setup pointers and other driver state that is constant for the life of a context.
@@ -362,16 +347,15 @@ static void amesa_display_init_pointers(GLcontext *gl_ctx) {
 
 	gl_ctx->Driver.GetString = get_string;
 	gl_ctx->Driver.UpdateState = amesa_display_update_state;
-	gl_ctx->Driver.ResizeBuffers = _swrast_alloc_buffers;
 	gl_ctx->Driver.GetBufferSize = get_buffer_size;
-
-	gl_ctx->Driver.Accum = _swrast_Accum;
-	gl_ctx->Driver.Bitmap = _swrast_Bitmap;
-	gl_ctx->Driver.Clear = clear;
-
+	gl_ctx->Driver.Enable = enable;
 	gl_ctx->Driver.Flush = flush;
 	gl_ctx->Driver.ClearColor = clear_color;
-	gl_ctx->Driver.Enable = enable;
+	gl_ctx->Driver.Clear = clear;
+
+	gl_ctx->Driver.ResizeBuffers = _swrast_alloc_buffers;
+	gl_ctx->Driver.Accum = _swrast_Accum;
+	gl_ctx->Driver.Bitmap = _swrast_Bitmap;
 
 	gl_ctx->Driver.CopyPixels = _swrast_CopyPixels;
 	gl_ctx->Driver.DrawPixels = _swrast_DrawPixels;
@@ -422,28 +406,28 @@ static void amesa_display_init_pointers(GLcontext *gl_ctx) {
 }
 
 void amesa_display_swap_buffer(AMesaContext *a_ctx) {
-	UBYTE *base_address;
-	APTR video_bitmap_handle;
-
-	video_bitmap_handle = LockBitMapTags(a_ctx->hardware_window->RPort->BitMap, LBMI_BASEADDRESS, (ULONG )&base_address, TAG_DONE);
-	if (video_bitmap_handle) {
-		// Note - The size must be an integral number of longwords (e.g.
-		// the size must be evenly divisible by four).
-		CopyMemQuick(a_ctx->back_buffer, base_address, (a_ctx->height * a_ctx->bprow));
-		UnLockBitMap(video_bitmap_handle);
-
-		_mesa_notifySwapBuffers(a_ctx->gl_ctx);
-	}
+	WritePixelArrayEx(
+		(UBYTE*)a_ctx->back_buffer, //srcRect
+		0, //SrcX
+		0, //SrcY
+		a_ctx->pitch, //SrcMod
+		a_ctx->hardware_window->RPort, //RastPort
+		a_ctx->hardware_window->BorderLeft, //DestX
+		a_ctx->hardware_window->BorderTop, //DestY
+		a_ctx->width, //SizeX
+		a_ctx->height, //SizeY
+		RECTFMT_ARGB); //SrcFormat
 }
 
 GLboolean amesa_display_init(AMesaContext *a_ctx) {
 	_mesa_debug(NULL, "amesa_display_init()....\n");
 
-	a_ctx->back_buffer = AllocVec(a_ctx->height * a_ctx->bprow, MEMF_PUBLIC|MEMF_CLEAR);
-	a_ctx->clear_buffer = AllocVec(a_ctx->height * a_ctx->bprow, MEMF_PUBLIC|MEMF_CLEAR);
-
 	// Seed the clear color.
-	a_ctx->clear_color = TC_RGB16PC(0, 0, 0);
+	a_ctx->clear_color = TC_ARGB32(0, 0, 0, 255);
+
+	// Create our pixel buffers.
+	a_ctx->clear_buffer = AllocVec((a_ctx->height * a_ctx->pitch), MEMF_PUBLIC|MEMF_CLEAR);
+	a_ctx->back_buffer = AllocVec((a_ctx->height * a_ctx->pitch), MEMF_PUBLIC|MEMF_CLEAR);
 
 	amesa_display_init_pointers(a_ctx->gl_ctx);
 

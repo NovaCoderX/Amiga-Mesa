@@ -52,9 +52,24 @@
 
 #define TC_ARGB32(r, g, b, a) (((a) << 24) | ((r) << 16) | ((g) << 8) | (b))
 
-static inline void WritePixelArrayEx(APTR a, UWORD b, UWORD c, UWORD d, struct RastPort* e, UWORD f, UWORD g, UWORD h, UWORD i, UBYTE j) {
-	WritePixelArray(a, b, c, d, e, f, g, h, i, j);
-}
+/*
+ * NOVA -- fast RGBA <-> ARGB32 conversion.
+ *
+ * A GLchan[4] is R,G,B,A in memory order and is 4-byte aligned inside Mesa's
+ * span arrays. On a big-endian machine an aligned longword load of it yields
+ * 0xRRGGBBAA, and the ARGB32 pixel we want is 0xAARRGGBB -- exactly a rotate
+ * right by 8, which the 68k does in a single ror.l. That replaces four byte
+ * loads, three shifts and three ORs per pixel in the hottest loop in the
+ * library.
+ *
+ * If the asm listing ever shows shifts instead of a ror.l, the idiom stopped
+ * being recognised -- it is still a win, but worth knowing.
+ */
+#if defined(__BIG_ENDIAN__) || defined(__m68k__) || defined(__MC68K__)
+#define NOVA_FAST_PIXEL_CONVERT	1
+#define NOVA_RGBA_TO_ARGB32(p)	(((GLuint)(p) >> 8) | ((GLuint)(p) << 24))
+#define NOVA_ARGB32_TO_RGBA(p)	(((GLuint)(p) << 8) | ((GLuint)(p) >> 24))
+#endif
 
 static const GLubyte* get_string(GLcontext* ctx, GLenum name) {
 	if (name == GL_RENDERER) {
@@ -191,9 +206,8 @@ static void clear(GLcontext* gl_ctx, GLbitfield mask, GLboolean all, GLint x, GL
 static void write_rgb_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y, const GLubyte rgba[][3], const GLubyte mask[]) {
 	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-	// Calculate the start of the row in the 32-bit buffer (4 bytes per pixel)
-	// Using simple width-based indexing for the non-padded approach
-	GLuint* buffer = (GLuint*) a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->width + x;
+	// NOVA: row table removes the per-span multiply
+	GLuint* buffer = a_ctx->row[y] + x;
 
 	if (mask) {
 		for (GLuint i = 0; i < n; i++) {
@@ -213,9 +227,24 @@ static void write_rgb_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y, 
 static void write_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y, const GLubyte rgba[][4], const GLubyte mask[]) {
 	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-	// Simple 32-bit pointer math: (row offset) + x
-	GLuint* buffer = (GLuint*) a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->width + x;
+	// NOVA: row table removes the multiply that used to run on every span call
+	GLuint* buffer = a_ctx->row[y] + x;
 
+#ifdef NOVA_FAST_PIXEL_CONVERT
+	const GLuint* src = (const GLuint*) rgba;
+
+	if (mask) {
+		for (GLuint i = 0; i < n; i++) {
+			if (mask[i]) {
+				buffer[i] = NOVA_RGBA_TO_ARGB32(src[i]);
+			}
+		}
+	} else {
+		for (GLuint i = 0; i < n; i++) {
+			buffer[i] = NOVA_RGBA_TO_ARGB32(src[i]);
+		}
+	}
+#else
 	if (mask) {
 		for (GLuint i = 0; i < n; i++) {
 			if (mask[i]) {
@@ -228,6 +257,7 @@ static void write_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y,
 			buffer[i] = TC_ARGB32(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP], rgba[i][ACOMP]);
 		}
 	}
+#endif
 }
 
 /*
@@ -238,7 +268,7 @@ static void write_mono_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLi
 	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
 	GLuint hicolor = TC_ARGB32(color[RCOMP], color[GCOMP], color[BCOMP], color[ACOMP]);
-	GLuint* buffer = (GLuint*) a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->width + x;
+	GLuint* buffer = a_ctx->row[y] + x;	// NOVA: row table
 
 	if (mask) {
 		for (GLuint i = 0; i < n; i++) {
@@ -257,20 +287,16 @@ static void write_mono_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLi
 static void write_rgba_pixels(const GLcontext* gl_ctx, GLuint n, const GLint x[], const GLint y[], const GLubyte rgba[][4],
 		const GLubyte mask[]) {
 	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
-	GLuint* buffer = (GLuint*) a_ctx->back_buffer;
-	int h = a_ctx->height - 1;
-	int w = a_ctx->width;
-
 	if (mask) {
 		for (GLuint i = 0; i < n; i++) {
 			if (mask[i]) {
 				// Straightforward 32-bit array indexing
-				buffer[(h - y[i]) * w + x[i]] = TC_ARGB32(rgba[i][0], rgba[i][1], rgba[i][2], rgba[i][3]);
+				a_ctx->row[y[i]][x[i]] = TC_ARGB32(rgba[i][0], rgba[i][1], rgba[i][2], rgba[i][3]);	// NOVA
 			}
 		}
 	} else {
 		for (GLuint i = 0; i < n; i++) {
-			buffer[(h - y[i]) * w + x[i]] = TC_ARGB32(rgba[i][0], rgba[i][1], rgba[i][2], rgba[i][3]);
+			a_ctx->row[y[i]][x[i]] = TC_ARGB32(rgba[i][0], rgba[i][1], rgba[i][2], rgba[i][3]);	// NOVA
 		}
 	}
 }
@@ -283,27 +309,19 @@ static void write_mono_rgba_pixels(const GLcontext* gl_ctx, GLuint n, const GLin
 		const GLubyte mask[]) {
 	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-	// Use 32-bit pointers for ARGB [cite: 18, 22]
-	GLuint* buffer = (GLuint*) a_ctx->back_buffer;
-
 	// Convert the single mono color to 32-bit ARGB [cite: 13, 22]
 	GLuint hicolor = TC_ARGB32(color[RCOMP], color[GCOMP], color[BCOMP], color[ACOMP]);
-
-	int h = a_ctx->height - 1;
-
-	// In the non-padded approach, stride is just the width
-	int stride = a_ctx->width;
 
 	if (mask) {
 		for (GLuint i = 0; i < n; i++) {
 			if (mask[i]) {
 				// Accessing 32-bit pixels using the simplified width stride [cite: 19, 24, 39]
-				buffer[(h - y[i]) * stride + x[i]] = hicolor;
+				a_ctx->row[y[i]][x[i]] = hicolor;	// NOVA
 			}
 		}
 	} else {
 		for (GLuint i = 0; i < n; i++) {
-			buffer[(h - y[i]) * stride + x[i]] = hicolor;
+			a_ctx->row[y[i]][x[i]] = hicolor;	// NOVA
 		}
 	}
 }
@@ -312,9 +330,16 @@ static void write_mono_rgba_pixels(const GLcontext* gl_ctx, GLuint n, const GLin
 static void read_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y, GLubyte rgba[][4]) {
 	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-	// Use GLuint* to ensure the CPU performs 32-bit fetches
-	GLuint* src = (GLuint*) a_ctx->back_buffer + (a_ctx->height - y - 1) * a_ctx->width + x;
+	// NOVA: row table, and 32-bit fetches
+	const GLuint* src = a_ctx->row[y] + x;
 
+#ifdef NOVA_FAST_PIXEL_CONVERT
+	GLuint* dst = (GLuint*) rgba;
+
+	for (GLuint i = 0; i < n; i++) {
+		dst[i] = NOVA_ARGB32_TO_RGBA(src[i]);
+	}
+#else
 	for (GLuint i = 0; i < n; i++) {
 		GLuint pixel = src[i]; // Fetch the whole pixel at once
 
@@ -323,27 +348,33 @@ static void read_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y, 
 		rgba[i][BCOMP] = (GLubyte) (pixel & 0xff);
 		rgba[i][ACOMP] = (GLubyte) ((pixel >> 24) & 0xff);
 	}
+#endif
 }
 
 /* Read an array of color pixels. */
 static void read_rgba_pixels(const GLcontext* gl_ctx, GLuint n, const GLint x[], const GLint y[], GLubyte rgba[][4], const GLubyte mask[]) {
 	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-	// Use 32-bit pointers for the ARGB back buffer
-	GLuint* buffer = (GLuint*) a_ctx->back_buffer;
-
-	int h = a_ctx->height - 1;
-
-	// In the non-padded approach, stride in pixels is exactly the width
-	int stride = a_ctx->width;
+#ifdef NOVA_FAST_PIXEL_CONVERT
+	GLuint* dst = (GLuint*) rgba;	// NOVA
 
 	if (mask) {
 		for (GLuint i = 0; i < n; i++) {
 			if (mask[i]) {
-				// Read the 32-bit ARGB pixel
-				GLuint color = buffer[(h - y[i]) * stride + x[i]];
+				dst[i] = NOVA_ARGB32_TO_RGBA(a_ctx->row[y[i]][x[i]]);
+			}
+		}
+	} else {
+		for (GLuint i = 0; i < n; i++) {
+			dst[i] = NOVA_ARGB32_TO_RGBA(a_ctx->row[y[i]][x[i]]);
+		}
+	}
+#else
+	if (mask) {
+		for (GLuint i = 0; i < n; i++) {
+			if (mask[i]) {
+				GLuint color = a_ctx->row[y[i]][x[i]];
 
-				// Unpack ARGB8888 components (Byte 0: Alpha, 1: Red, 2: Green, 3: Blue)
 				rgba[i][RCOMP] = (GLubyte) ((color >> 16) & 0xff); // Red
 				rgba[i][GCOMP] = (GLubyte) ((color >> 8) & 0xff); // Green
 				rgba[i][BCOMP] = (GLubyte) (color & 0xff); // Blue
@@ -352,16 +383,15 @@ static void read_rgba_pixels(const GLcontext* gl_ctx, GLuint n, const GLint x[],
 		}
 	} else {
 		for (GLuint i = 0; i < n; i++) {
-			// Read the 32-bit ARGB pixel
-			GLuint color = buffer[(h - y[i]) * stride + x[i]];
+			GLuint color = a_ctx->row[y[i]][x[i]];
 
-			// Unpack ARGB8888 components (Byte 0: Alpha, 1: Red, 2: Green, 3: Blue)
 			rgba[i][RCOMP] = (GLubyte) ((color >> 16) & 0xff); // Red
 			rgba[i][GCOMP] = (GLubyte) ((color >> 8) & 0xff); // Green
 			rgba[i][BCOMP] = (GLubyte) (color & 0xff); // Blue
 			rgba[i][ACOMP] = (GLubyte) ((color >> 24) & 0xff); // Alpha
 		}
 	}
+#endif
 }
 
 // Setup pointers and other driver state that is constant for the life of a context.
@@ -432,7 +462,7 @@ static void amesa_display_init_pointers(GLcontext* gl_ctx) {
 void amesa_display_swap_buffers(AMesaContext* a_ctx) {
 	_mesa_notifySwapBuffers(a_ctx->gl_ctx);
 
-	WritePixelArrayEx((UBYTE*) a_ctx->back_buffer, //srcRect
+	WritePixelArray((UBYTE*) a_ctx->back_buffer, //srcRect
 			0, //SrcX
 			0, //SrcY
 			a_ctx->pitch, //SrcMod
@@ -463,12 +493,33 @@ GLboolean amesa_display_init(AMesaContext* a_ctx) {
 		return GL_FALSE;
 	}
 
+	// NOVA: row pointer table with the y-flip baked in. Every span writer used to
+	// compute (height - y - 1) * width + x, i.e. a 32-bit multiply per call --
+	// which matters because spans are frequently only a few pixels wide.
+	a_ctx->row = AllocVec(a_ctx->height * sizeof(GLuint*), MEMF_PUBLIC|MEMF_CLEAR);
+	if (!a_ctx->row) {
+		_mesa_error(NULL, GL_OUT_OF_MEMORY, "Could not allocate the row table");
+		return GL_FALSE;
+	}
+
+	{
+		GLuint yy;
+		for (yy = 0; yy < a_ctx->height; yy++) {
+			a_ctx->row[yy] = (GLuint*) a_ctx->back_buffer + (a_ctx->height - yy - 1) * a_ctx->width;
+		}
+	}
+
 	amesa_display_init_pointers(a_ctx->gl_ctx);
 	return GL_TRUE;
 }
 
 void amesa_display_shutdown(AMesaContext* a_ctx) {
 	_mesa_debug(NULL, "amesa_display_shutdown()....\n");
+
+	if (a_ctx->row) {
+		FreeVec(a_ctx->row);	// NOVA
+		a_ctx->row = NULL;
+	}
 
 	if (a_ctx->back_buffer) {
 		FreeVec(a_ctx->back_buffer);

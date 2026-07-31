@@ -14,6 +14,7 @@ struct amigamesa_context {
 	GLuint clear_color; /* Color for clearing the pixel buffer */
 	GLubyte *clear_buffer; /* Pixel buffer */
 	GLubyte *back_buffer; /* Pixel buffer */
+	GLuint **row; /* NOVA: back_buffer row pointers, y-flip already applied */
 	struct Window *hardware_window; /* Intuition window */
 };
 

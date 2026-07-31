@@ -1199,6 +1199,15 @@ opt_sample_rgb_2d( GLcontext *ctx, GLuint texUnit,
       rgba[k][RCOMP] = texel[0];
       rgba[k][GCOMP] = texel[1];
       rgba[k][BCOMP] = texel[2];
+      /* NOVA: upstream Mesa leaves ACOMP untouched here. The destination is
+       * swrast->TexelBuffer, which is never cleared, so alpha holds residue
+       * from a previous span. texture_apply() never notices because all of
+       * its GL_RGB cases leave alpha as Af -- but texture_combine() reads
+       * texel[i][ACOMP] with no base-format switch, so a GL_COMBINE_EXT unit
+       * bound to an RGB texture ends up with garbage alpha. An RGB texel is
+       * defined to have alpha = 1.0, so say so.
+       */
+      rgba[k][ACOMP] = CHAN_MAX;
    }
 }
 

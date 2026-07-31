@@ -134,7 +134,8 @@ blend_transparency( GLcontext *ctx, GLuint n, const GLubyte mask[],
 #define DIV255(X)  (((X) << 8) + (X) + 256) >> 16
 #else
 	    GLint temp;
-#define DIV255(X)  (temp = (X), ((temp << 8) + temp + 256) >> 16)
+//#define DIV255(X)  (temp = (X), ((temp << 8) + temp + 256) >> 16)
+#define DIV255(X)  (temp = (X), (temp * 257 + 256) >> 16)
 #endif
             const GLint r = DIV255((rgba[i][RCOMP] - dest[i][RCOMP]) * t) + dest[i][RCOMP];
             const GLint g = DIV255((rgba[i][GCOMP] - dest[i][GCOMP]) * t) + dest[i][GCOMP];

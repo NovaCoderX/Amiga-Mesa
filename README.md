@@ -1,4 +1,4 @@
 # NovaMesa
 Software implementation of OpenGL based on Mesa v4.1 for Amiga 68k RTG.
 
-For performance reasons, only 32-bit displays are supported and the only practical target for this library is a PiStorm 4.
+For performance reasons, only 32-bit displays are supported and the only practical target for this library is PiStorm 4.

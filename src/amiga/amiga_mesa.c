@@ -25,8 +25,8 @@
 #include <GL/amiga_mesa.h>
 #include "amiga_mesa_def.h"
 #include "amiga_mesa_display.h"
-#include <proto/cybergraphics.h>
-#include <cybergraphx/cybergraphics.h>
+#include <proto/Picasso96.h>
+#include <libraries/Picasso96.h>
 
 #include "glheader.h"
 #include "context.h"
@@ -48,6 +48,29 @@
 #include "tnl/tnl.h"
 #include "tnl/t_context.h"
 #include "tnl/t_pipeline.h"
+
+
+static GLboolean isP96Mode(ULONG modeId) {
+	if (modeId == INVALID_ID) {
+		return GL_FALSE;
+	}
+
+	return p96GetModeIDAttr(modeId, P96IDA_ISP96) ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean isPixelFormat32(ULONG pixelFormat) {
+	switch (pixelFormat)
+	{
+		case RGBFB_A8R8G8B8:
+		case RGBFB_A8B8G8R8:
+		case RGBFB_R8G8B8A8:
+		case RGBFB_B8G8R8A8:
+			return GL_TRUE;
+
+		default:
+			return GL_FALSE;
+	}
+}
 
 static GLvisual* amesa_create_visual(AMesaContext* a_ctx) {
 	GLint indexBits;
@@ -78,7 +101,6 @@ AMesaContext* amesa_create_context(struct Window* window) {
 	AMesaContext* a_ctx = NULL;
 	struct Screen* screen;
 	ULONG pixelFormat;
-	GLboolean validMode = GL_FALSE;
 
 	_mesa_debug(NULL, "Creating Amiga context...\n");
 
@@ -96,22 +118,14 @@ AMesaContext* amesa_create_context(struct Window* window) {
 
 	// Note - The screen must exist if the window exists.
 	screen = a_ctx->hardware_window->WScreen;
-	if (!IsCyberModeID(GetVPModeID(&screen->ViewPort))) {
-		_mesa_error(NULL, GL_INVALID_VALUE, "The Intuition window is not CGX native");
+	if (!isP96Mode(GetVPModeID(&screen->ViewPort))) {
+		_mesa_error(NULL, GL_INVALID_VALUE, "The Intuition window is not P96 native");
 		return NULL;
 	}
 
-	pixelFormat = GetCyberMapAttr(a_ctx->hardware_window->RPort->BitMap, CYBRMATTR_PIXFMT);
-	if ((pixelFormat == PIXFMT_ARGB32) || (pixelFormat == PIXFMT_BGRA32) || (pixelFormat == PIXFMT_RGBA32)) {
-		validMode = GL_TRUE;
-	}
-
-	if ((pixelFormat == PIXFMT_BGR24) || (pixelFormat == PIXFMT_RGB24)) {
-		validMode = GL_TRUE;
-	}
-
-	if (!validMode) {
-		_mesa_error(NULL, GL_INVALID_VALUE, "Only 24/32-bit pixel formats are supported by OpenGL");
+	pixelFormat = p96GetBitMapAttr(a_ctx->hardware_window->RPort->BitMap, P96BMA_RGBFORMAT);
+	if (!isPixelFormat32(pixelFormat)) {
+		_mesa_error(NULL, GL_INVALID_VALUE, "Only 32-bit pixel formats are supported by OpenGL");
 		return NULL;
 	}
 
@@ -265,4 +279,3 @@ void amesa_swap_buffers(AMesaContext* a_ctx) {
 		amesa_display_swap_buffers(a_ctx);
 	}
 }
-

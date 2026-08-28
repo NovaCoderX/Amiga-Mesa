@@ -25,8 +25,8 @@
 #include <GL/amiga_mesa.h>
 #include "amiga_mesa_def.h"
 #include "amiga_mesa_display.h"
-#include <proto/cybergraphics.h>
-#include <cybergraphx/cybergraphics.h>
+#include <proto/Picasso96.h>
+#include <libraries/Picasso96.h>
 
 #include "glheader.h"
 #include "context.h"
@@ -51,25 +51,6 @@
 #include "tnl/t_pipeline.h"
 
 #define TC_ARGB32(r, g, b, a) (((a) << 24) | ((r) << 16) | ((g) << 8) | (b))
-
-/*
- * NOVA -- fast RGBA <-> ARGB32 conversion.
- *
- * A GLchan[4] is R,G,B,A in memory order and is 4-byte aligned inside Mesa's
- * span arrays. On a big-endian machine an aligned longword load of it yields
- * 0xRRGGBBAA, and the ARGB32 pixel we want is 0xAARRGGBB -- exactly a rotate
- * right by 8, which the 68k does in a single ror.l. That replaces four byte
- * loads, three shifts and three ORs per pixel in the hottest loop in the
- * library.
- *
- * If the asm listing ever shows shifts instead of a ror.l, the idiom stopped
- * being recognised -- it is still a win, but worth knowing.
- */
-#if defined(__BIG_ENDIAN__) || defined(__m68k__) || defined(__MC68K__)
-#define NOVA_FAST_PIXEL_CONVERT	1
-#define NOVA_RGBA_TO_ARGB32(p)	(((GLuint)(p) >> 8) | ((GLuint)(p) << 24))
-#define NOVA_ARGB32_TO_RGBA(p)	(((GLuint)(p) << 8) | ((GLuint)(p) >> 24))
-#endif
 
 static const GLubyte* get_string(GLcontext* ctx, GLenum name) {
 	if (name == GL_RENDERER) {
@@ -230,21 +211,6 @@ static void write_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y,
 	// NOVA: row table removes the multiply that used to run on every span call
 	GLuint* buffer = a_ctx->row[y] + x;
 
-#ifdef NOVA_FAST_PIXEL_CONVERT
-	const GLuint* src = (const GLuint*) rgba;
-
-	if (mask) {
-		for (GLuint i = 0; i < n; i++) {
-			if (mask[i]) {
-				buffer[i] = NOVA_RGBA_TO_ARGB32(src[i]);
-			}
-		}
-	} else {
-		for (GLuint i = 0; i < n; i++) {
-			buffer[i] = NOVA_RGBA_TO_ARGB32(src[i]);
-		}
-	}
-#else
 	if (mask) {
 		for (GLuint i = 0; i < n; i++) {
 			if (mask[i]) {
@@ -257,7 +223,6 @@ static void write_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y,
 			buffer[i] = TC_ARGB32(rgba[i][RCOMP], rgba[i][GCOMP], rgba[i][BCOMP], rgba[i][ACOMP]);
 		}
 	}
-#endif
 }
 
 /*
@@ -333,13 +298,6 @@ static void read_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y, 
 	// NOVA: row table, and 32-bit fetches
 	const GLuint* src = a_ctx->row[y] + x;
 
-#ifdef NOVA_FAST_PIXEL_CONVERT
-	GLuint* dst = (GLuint*) rgba;
-
-	for (GLuint i = 0; i < n; i++) {
-		dst[i] = NOVA_ARGB32_TO_RGBA(src[i]);
-	}
-#else
 	for (GLuint i = 0; i < n; i++) {
 		GLuint pixel = src[i]; // Fetch the whole pixel at once
 
@@ -348,28 +306,12 @@ static void read_rgba_span(const GLcontext* gl_ctx, GLuint n, GLint x, GLint y, 
 		rgba[i][BCOMP] = (GLubyte) (pixel & 0xff);
 		rgba[i][ACOMP] = (GLubyte) ((pixel >> 24) & 0xff);
 	}
-#endif
 }
 
 /* Read an array of color pixels. */
 static void read_rgba_pixels(const GLcontext* gl_ctx, GLuint n, const GLint x[], const GLint y[], GLubyte rgba[][4], const GLubyte mask[]) {
 	AMesaContext* a_ctx = (AMesaContext*) gl_ctx->DriverCtx;
 
-#ifdef NOVA_FAST_PIXEL_CONVERT
-	GLuint* dst = (GLuint*) rgba;	// NOVA
-
-	if (mask) {
-		for (GLuint i = 0; i < n; i++) {
-			if (mask[i]) {
-				dst[i] = NOVA_ARGB32_TO_RGBA(a_ctx->row[y[i]][x[i]]);
-			}
-		}
-	} else {
-		for (GLuint i = 0; i < n; i++) {
-			dst[i] = NOVA_ARGB32_TO_RGBA(a_ctx->row[y[i]][x[i]]);
-		}
-	}
-#else
 	if (mask) {
 		for (GLuint i = 0; i < n; i++) {
 			if (mask[i]) {
@@ -391,7 +333,6 @@ static void read_rgba_pixels(const GLcontext* gl_ctx, GLuint n, const GLint x[],
 			rgba[i][ACOMP] = (GLubyte) ((color >> 24) & 0xff); // Alpha
 		}
 	}
-#endif
 }
 
 // Setup pointers and other driver state that is constant for the life of a context.
@@ -460,18 +401,25 @@ static void amesa_display_init_pointers(GLcontext* gl_ctx) {
 }
 
 void amesa_display_swap_buffers(AMesaContext* a_ctx) {
+	struct RenderInfo renderInfo;
+
 	_mesa_notifySwapBuffers(a_ctx->gl_ctx);
 
-	WritePixelArray((UBYTE*) a_ctx->back_buffer, //srcRect
-			0, //SrcX
-			0, //SrcY
-			a_ctx->pitch, //SrcMod
-			a_ctx->hardware_window->RPort, //RastPort
-			a_ctx->hardware_window->BorderLeft, //DestX
-			a_ctx->hardware_window->BorderTop, //DestY
-			a_ctx->width, //SizeX
-			a_ctx->height, //SizeY
-			RECTFMT_ARGB); //SrcFormat
+	// The surface is ARGB, P96 converts to whatever the screen is
+	// really using on the way out.
+	renderInfo.Memory = (APTR)a_ctx->back_buffer;
+	renderInfo.BytesPerRow = (WORD)a_ctx->pitch;
+	renderInfo.pad = 0;
+	renderInfo.RGBFormat = RGBFB_A8R8G8B8;
+
+	p96WritePixelArray(&renderInfo, //RenderInfo
+		0, //SrcX
+		0, //SrcY
+		a_ctx->hardware_window->RPort, //RastPort
+		a_ctx->hardware_window->BorderLeft, //DestX
+		a_ctx->hardware_window->BorderTop, //DestY
+		a_ctx->width, //SizeX
+		a_ctx->height); //SizeY
 }
 
 GLboolean amesa_display_init(AMesaContext* a_ctx) {
@@ -517,7 +465,7 @@ void amesa_display_shutdown(AMesaContext* a_ctx) {
 	_mesa_debug(NULL, "amesa_display_shutdown()....\n");
 
 	if (a_ctx->row) {
-		FreeVec(a_ctx->row);	// NOVA
+		FreeVec(a_ctx->row);
 		a_ctx->row = NULL;
 	}
 
@@ -531,4 +479,3 @@ void amesa_display_shutdown(AMesaContext* a_ctx) {
 		a_ctx->clear_buffer = NULL;
 	}
 }
-
